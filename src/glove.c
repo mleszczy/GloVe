@@ -323,6 +323,9 @@ int train_glove() {
     struct tm *info;
     char time_buffer[80];
     // Lock-free asynchronous SGD
+    struct timespec start, finish;
+    double elapsed;
+    clock_gettime(CLOCK_MONOTONIC, &start);
     for (b = 0; b < num_iter; b++) {
         total_cost = 0;
         for (a = 0; a < num_threads - 1; a++) lines_per_thread[a] = num_lines / num_threads;
@@ -348,6 +351,11 @@ int train_glove() {
         }
 
     }
+    clock_gettime(CLOCK_MONOTONIC, &finish);
+    elapsed = (finish.tv_sec - start.tv_sec);
+    elapsed += (finish.tv_nsec - start.tv_nsec) / 1000000000.0;
+    printf("Average epoch time: %lfs\n", elapsed / num_iter);
+
     free(pt);
     free(lines_per_thread);
     return save_params(0);
