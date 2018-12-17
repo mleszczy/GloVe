@@ -58,6 +58,8 @@ long long num_lines, *lines_per_thread, vocab_size;
 char *vocab_file, *input_file, *save_W_file, *save_gradsq_file;
 int seed;
 
+char init_word_file[MAX_STRING_LENGTH], init_context_file[MAX_STRING_LENGTH];
+
 /* Efficient string comparison */
 int scmp( char *s1, char *s2 ) {
     while (*s1 != '\0' && *s1 == *s2) {s1++; s2++;}
@@ -188,8 +190,13 @@ int save_params(int nb_iter) {
     long long a, b;
     char format[20];
     char output_file[MAX_STRING_LENGTH], output_file_gsq[MAX_STRING_LENGTH];
+
+    char output_word_vector_file_full[MAX_STRING_LENGTH];
+    char output_context_vector_file_full[MAX_STRING_LENGTH];
+
     char *word = malloc(sizeof(char) * MAX_STRING_LENGTH + 1);
     FILE *fid, *fout, *fgs;
+    FILE *foutw, *foutc;
 
     if (use_binary > 0) { // Save parameters in binary file
         if (nb_iter <= 0)
@@ -214,9 +221,13 @@ int save_params(int nb_iter) {
         }
     }
     if (use_binary != 1) { // Save parameters in text file
-        if (nb_iter <= 0)
+        if (nb_iter <= 0) {
             sprintf(output_file,"%s.txt",save_W_file);
-        else
+            sprintf(output_file,"%s.txt",save_W_file);
+
+            sprintf(output_word_vector_file_full,"%s.w.txt", output_file);
+            sprintf(output_context_vector_file_full,"%s.c.txt", output_file);
+        } else
             sprintf(output_file,"%s.%03d.txt",save_W_file,nb_iter);
         if (save_gradsq > 0) {
             if (nb_iter <= 0)
@@ -228,11 +239,22 @@ int save_params(int nb_iter) {
             if (fgs == NULL) {fprintf(stderr, "Unable to open file %s.\n",save_gradsq_file); return 1;}
         }
         fout = fopen(output_file,"wb");
-        if (fout == NULL) {fprintf(stderr, "Unable to open file %s.\n",save_W_file); return 1;}
+        if (fout == NULL) {fprintf(stderr, "Unable to open file %s.\n",output_file); return 1;}
+
+        foutw = fopen(output_word_vector_file_full,"wb");
+        if (fout == NULL) {fprintf(stderr, "Unable to open file %s.\n",output_word_vector_file_full); return 1;}
+        foutc = fopen(output_context_vector_file_full,"wb");
+        if (fout == NULL) {fprintf(stderr, "Unable to open file %s.\n",output_context_vector_file_full); return 1;}
+
+
         fid = fopen(vocab_file, "r");
         sprintf(format,"%%%ds",MAX_STRING_LENGTH);
         if (fid == NULL) {fprintf(stderr, "Unable to open file %s.\n",vocab_file); return 1;}
         if (write_header) fprintf(fout, "%lld %d\n", vocab_size, vector_size);
+
+        fprintf(foutw, "%lld %d\n", vocab_size, vector_size+1);
+        fprintf(foutc, "%lld %d\n", vocab_size, vector_size+1);
+
         for (a = 0; a < vocab_size; a++) {
             if (fscanf(fid,format,word) == 0) return 1;
             // input vocab cannot contain special <unk> keyword
@@ -247,6 +269,15 @@ int save_params(int nb_iter) {
             if (model == 2) // Save "word + context word" vectors (without bias)
                 for (b = 0; b < vector_size; b++) fprintf(fout," %lf", W[a * (vector_size + 1) + b] + W[(vocab_size + a) * (vector_size + 1) + b]);
             fprintf(fout,"\n");
+
+            // Save word embedding and context embedding (including bias)
+            fprintf(foutw, "%s",word);
+            fprintf(foutc, "%s",word);
+            for (b = 0; b < (vector_size + 1); b++) fprintf(foutw," %lf", W[a * (vector_size + 1) + b]);
+            for (b = 0; b < (vector_size + 1); b++) fprintf(foutc," %lf", W[(vocab_size + a) * (vector_size + 1) + b]);
+            fprintf(foutw,"\n");
+            fprintf(foutc,"\n");
+
             if (save_gradsq > 0) { // Save gradsq
                 fprintf(fgs, "%s",word);
                 for (b = 0; b < (vector_size + 1); b++) fprintf(fgs," %lf", gradsq[a * (vector_size + 1) + b]);
@@ -271,6 +302,10 @@ int save_params(int nb_iter) {
             }
 
             fprintf(fout, "%s",word);
+
+            fprintf(foutw, "%s",word);
+            fprintf(foutc, "%s",word);
+
             if (model == 0) { // Save all parameters (including bias)
                 for (b = 0; b < (vector_size + 1); b++) fprintf(fout," %lf", unk_vec[b]);
                 for (b = 0; b < (vector_size + 1); b++) fprintf(fout," %lf", unk_context[b]);
@@ -281,12 +316,20 @@ int save_params(int nb_iter) {
                 for (b = 0; b < vector_size; b++) fprintf(fout," %lf", unk_vec[b] + unk_context[b]);
             fprintf(fout,"\n");
 
+            for (b = 0; b < (vector_size + 1); b++) fprintf(foutw," %lf", unk_vec[b]);
+            for (b = 0; b < (vector_size + 1); b++) fprintf(foutc," %lf", unk_context[b]);
+            fprintf(foutw,"\n");
+            fprintf(foutc,"\n");
+
             free(unk_vec);
             free(unk_context);
         }
 
         fclose(fid);
         fclose(fout);
+
+        fclose(foutw);
+        fclose(foutc);
         if (save_gradsq > 0) fclose(fgs);
     }
     return 0;
@@ -417,6 +460,12 @@ int main(int argc, char **argv) {
         printf("\t\tCheckpoint a  model every <int> iterations; default 0 (off)\n");
         printf("\t-seed <int>\n");
         printf("\t\tSeed for embedding initialization\n");
+
+        printf("\t-init-word <file>\n");
+        printf("\t\tInit word vectors from <file>, not random initialization.\n");
+        printf("\t-init-context <file>\n");
+        printf("\t\tInit context vectors from <file>, not random initialization.\n");
+
         printf("\nExample usage:\n");
         printf("./glove -input-file cooccurrence.shuf.bin -vocab-file vocab.txt -save-file vectors -gradsq-file gradsq -verbose 2 -vector-size 100 -threads 16 -alpha 0.75 -x-max 100.0 -eta 0.05 -binary 2 -model 2\n\n");
         result = 0;
@@ -447,6 +496,10 @@ int main(int argc, char **argv) {
         else strcpy(input_file, (char *)"cooccurrence.shuf.bin");
         if ((i = find_arg((char *)"-checkpoint-every", argc, argv)) > 0) checkpoint_every = atoi(argv[i + 1]);
         if ((i = find_arg((char *)"-seed", argc, argv)) > 0) seed = atoi(argv[i + 1]);
+
+        if ((i = find_arg((char *)"-init-word", argc, argv)) > 0) strcpy(init_word_file, argv[i + 1]);
+        if ((i = find_arg((char *)"-init-context", argc, argv)) > 0) strcpy(init_context_file, argv[i + 1]);
+
 
         vocab_size = 0;
         fid = fopen(vocab_file, "r");
