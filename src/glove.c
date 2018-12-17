@@ -70,6 +70,13 @@ int seed;
 
 char init_word_file[MAX_STRING_LENGTH], init_context_file[MAX_STRING_LENGTH];
 
+int *freeze_hash;
+
+char freeze_vocab[MAX_STRING_LENGTH];
+long long freeze_iter = 0;
+
+long long global_iter=0;
+
 /* Efficient string comparison */
 int scmp( char *s1, char *s2 ) {
     while (*s1 != '\0' && *s1 == *s2) {s1++; s2++;}
@@ -292,14 +299,18 @@ void *glove_thread(void *vid) {
         }
         if (!isnan(W_updates1_sum) && !isinf(W_updates1_sum) && !isnan(W_updates2_sum) && !isinf(W_updates2_sum)) {
             for (b = 0; b < vector_size; b++) {
-                W[b + l1] -= W_updates1[b];
-                W[b + l2] -= W_updates2[b];
+                if (freeze_hash[cr.word1 - 1LL] == 0 || global_iter >= freeze_iter)
+                    W[b + l1] -= W_updates1[b];
+                if (freeze_hash[cr.word2 - 1LL] == 0 || global_iter >= freeze_iter)
+                    W[b + l2] -= W_updates2[b];
             }
         }
 
         // updates for bias terms
-        W[vector_size + l1] -= check_nan(fdiff / sqrt(gradsq[vector_size + l1]));
-        W[vector_size + l2] -= check_nan(fdiff / sqrt(gradsq[vector_size + l2]));
+        if (freeze_hash[cr.word1 - 1LL] == 0 || global_iter >= freeze_iter)
+            W[vector_size + l1] -= check_nan(fdiff / sqrt(gradsq[vector_size + l1]));
+        if (freeze_hash[cr.word2 - 1LL] == 0 || global_iter >= freeze_iter)
+            W[vector_size + l2] -= check_nan(fdiff / sqrt(gradsq[vector_size + l2]));
         fdiff *= fdiff;
         gradsq[vector_size + l1] += fdiff;
         gradsq[vector_size + l2] += fdiff;
@@ -476,6 +487,35 @@ int train_glove() {
     FILE *fin;
     real total_cost = 0;
 
+
+    freeze_hash = (int *)calloc(vocab_size, sizeof(int));
+
+    HASHREC **vocab_hash = inithashtable();
+
+    char str[MAX_STRING_LENGTH + 1];
+    char format[20];
+    sprintf(format,"%%%ds",MAX_STRING_LENGTH);
+    FILE *fid;
+    fid = fopen(vocab_file, "rb");
+    long long cnt = 0;
+    long long tmp;
+    while (fscanf(fid, format, str) != EOF) { // Insert all tokens into hashtable
+        hashinsert(vocab_hash, str, cnt, 1);
+        fscanf(fid, "%lld", &tmp);
+        cnt += 1;
+    }
+    fclose(fid);
+
+    fid = fopen(freeze_vocab, "rb");
+    long long idx;
+    while (fscanf(fid, format, str) != EOF) { // Check all freezen tokens into hashtable
+        idx = hashinsert(vocab_hash, str, -1, 0);
+        fscanf(fid, "%lld", &tmp);
+        if (idx >= 0) freeze_hash[idx] = 1;
+    }
+    fclose(fid);
+
+
     fprintf(stderr, "TRAINING MODEL\n");
 
     fin = fopen(input_file, "rb");
@@ -501,6 +541,7 @@ int train_glove() {
     // Lock-free asynchronous SGD
     for (b = 0; b < num_iter; b++) {
         total_cost = 0;
+        global_iter = b;
         for (a = 0; a < num_threads - 1; a++) lines_per_thread[a] = num_lines / num_threads;
         lines_per_thread[a] = num_lines / num_threads + num_lines % num_threads;
         long long *thread_ids = (long long*)malloc(sizeof(long long) * num_threads);
@@ -599,6 +640,11 @@ int main(int argc, char **argv) {
         printf("\t-init-context <file>\n");
         printf("\t\tInit context vectors from <file>, not random initialization.\n");
 
+        printf("\t-freeze-vocab <file>\n");
+        printf("\t\tFreezen vocab from <file>.\n");
+        printf("\t-freeze-iter <file>\n");
+        printf("\t\tNumber of iteration to freeze vocab.\n");
+
         printf("\nExample usage:\n");
         printf("./glove -input-file cooccurrence.shuf.bin -vocab-file vocab.txt -save-file vectors -gradsq-file gradsq -verbose 2 -vector-size 100 -threads 16 -alpha 0.75 -x-max 100.0 -eta 0.05 -binary 2 -model 2\n\n");
         result = 0;
@@ -633,6 +679,8 @@ int main(int argc, char **argv) {
         if ((i = find_arg((char *)"-init-word", argc, argv)) > 0) strcpy(init_word_file, argv[i + 1]);
         if ((i = find_arg((char *)"-init-context", argc, argv)) > 0) strcpy(init_context_file, argv[i + 1]);
 
+        if ((i = find_arg((char *)"-freeze-vocab", argc, argv)) > 0) strcpy(freeze_vocab, argv[i + 1]);
+        if ((i = find_arg((char *)"-freeze-iter", argc, argv)) > 0) freeze_iter = atoi(argv[i + 1]);
 
         vocab_size = 0;
         fid = fopen(vocab_file, "r");
