@@ -32,6 +32,10 @@
 
 #define _FILE_OFFSET_BITS 64
 #define MAX_STRING_LENGTH 1000
+#define TSIZE 1048576
+#define HSEED 1159241
+
+#define HASHFN  bitwisehash
 
 typedef double real;
 
@@ -40,6 +44,12 @@ typedef struct cooccur_rec {
     int word2;
     real val;
 } CREC;
+
+typedef struct hashrec {
+    char *word;
+    long long count;
+    struct hashrec *next;
+} HASHREC;
 
 int write_header=0; //0=no, 1=yes; writes vocab_size/vector_size as first line for use with some libraries, such as gensim.
 int verbose = 2; // 0, 1, or 2
@@ -64,6 +74,61 @@ char init_word_file[MAX_STRING_LENGTH], init_context_file[MAX_STRING_LENGTH];
 int scmp( char *s1, char *s2 ) {
     while (*s1 != '\0' && *s1 == *s2) {s1++; s2++;}
     return(*s1 - *s2);
+}
+
+/* Simple bitwise hash function */
+unsigned int bitwisehash(char *word, int tsize, unsigned int seed) {
+    char c;
+    unsigned int h;
+    h = seed;
+    for (; (c =* word) != '\0'; word++) h ^= ((h << 5) + c + (h >> 2));
+    return((unsigned int)((h&0x7fffffff) % tsize));
+}
+
+/* Create hash table, initialise pointers to NULL */
+HASHREC ** inithashtable() {
+    int i;
+    HASHREC **ht;
+    ht = (HASHREC **) malloc( sizeof(HASHREC *) * TSIZE );
+    for (i = 0; i < TSIZE; i++) ht[i] = (HASHREC *) NULL;
+    return(ht);
+}
+
+/* Search hash table for given string, insert if not found */
+long long hashinsert(HASHREC **ht, char *w, long long cnt, int insert) {
+    HASHREC     *htmp, *hprv;
+    unsigned int hval = HASHFN(w, TSIZE, HSEED);
+    long long ret = -1;
+
+    for (hprv = NULL, htmp = ht[hval]; htmp != NULL && scmp(htmp->word, w) != 0; hprv = htmp, htmp = htmp->next);
+    if (htmp == NULL) {
+        if (insert > 0) {
+            htmp = (HASHREC *) malloc( sizeof(HASHREC) );
+            htmp->word = (char *) malloc( strlen(w) + 1 );
+            strcpy(htmp->word, w);
+            htmp->count = cnt;
+            htmp->next = NULL;
+            if ( hprv==NULL )
+                ht[hval] = htmp;
+            else
+                hprv->next = htmp;
+            ret = htmp->count;
+        }
+    }
+    else {
+        /* new records are not moved to front */
+        if (insert > 0) {
+            htmp->count = cnt;
+            if (hprv != NULL) {
+                /* move to front on access */
+                hprv->next = htmp->next;
+                htmp->next = ht[hval];
+                ht[hval] = htmp;
+            }
+        }
+        ret = htmp->count;
+    }
+    return ret;
 }
 
 void initialize_parameters() {
@@ -93,7 +158,75 @@ void initialize_parameters() {
             gradsq[a * vector_size + b] = 1.0; // So initial value of eta is equal to initial learning rate
         }
     }
+
+    HASHREC **vocab_hash = inithashtable();
+
+    char str[MAX_STRING_LENGTH + 1];
+    char format[20];
+    sprintf(format,"%%%ds",MAX_STRING_LENGTH);
+    FILE *fid;
+    fid = fopen(vocab_file, "rb");
+    long long cnt = 0;
+    long long tmp;
+    while (fscanf(fid, format, str) != EOF) { // Insert all tokens into hashtable
+        hashinsert(vocab_hash, str, cnt, 1);
+        fscanf(fid, "%lld", &tmp);
+        cnt += 1;
+    }
+    fclose(fid);
+
+    long long w_size, w_length;
+    fid = fopen(init_word_file, "r");
+    if (fid != NULL) {
+        fscanf (fid, "%lld", &w_size);
+        fscanf (fid, "%lld", &w_length);
+        if (vector_size != w_length) {
+            fprintf(stderr, "Vector length doesn't match.\n");
+            return;
+        }
+
+        char word[MAX_STRING_LENGTH];
+        long long idx;
+        real value;
+        sprintf(format,"%%%ds",MAX_STRING_LENGTH);
+        for (a = 0; a < w_size; a++) {
+            if (fscanf(fid,format,word) == 0) return;
+            idx = hashinsert(vocab_hash, word, -1, 0);
+            for (b = 0; b < w_length; b++) {
+                if (fscanf(fid," %lf",&value) == 0) return;
+                if (idx >= 0) W[idx * vector_size + b] = value;
+            }
+        }
+    }
+    fclose(fid);
+
+    long long c_size, c_length;
+    fid = fopen(init_context_file, "r");
+    if (fid != NULL) {
+        fscanf (fid, "%lld", &c_size);
+        fscanf (fid, "%lld", &c_length);
+        if (vector_size != c_length) {
+            fprintf(stderr, "Vector length doesn't match.\n");
+            return;
+        }
+
+        char word[MAX_STRING_LENGTH];
+        long long idx;
+        real value;
+        sprintf(format,"%%%ds",MAX_STRING_LENGTH);
+        for (a = 0; a < w_size; a++) {
+            if (fscanf(fid,format,word) == 0) return;
+            idx = hashinsert(vocab_hash, word, -1, 0);
+            for (b = 0; b < c_length; b++) {
+                if (fscanf(fid," %lf",&value) == 0) return;
+                if (idx >= 0) W[vocab_size * vector_size + idx * vector_size + b] = value;
+            }
+        }
+    }
+    fclose(fid);
+
     vector_size--;
+
 }
 
 inline real check_nan(real update) {
