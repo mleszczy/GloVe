@@ -204,8 +204,8 @@ void initialize_parameters() {
                 if (idx >= 0) W[idx * vector_size + b] = value;
             }
         }
+        fclose(fid);
     }
-    fclose(fid);
 
     long long c_size, c_length;
     fid = fopen(init_context_file, "r");
@@ -229,8 +229,8 @@ void initialize_parameters() {
                 if (idx >= 0) W[vocab_size * vector_size + idx * vector_size + b] = value;
             }
         }
+        fclose(fid);
     }
-    fclose(fid);
 
     vector_size--;
 
@@ -487,7 +487,6 @@ int train_glove() {
     FILE *fin;
     real total_cost = 0;
 
-
     freeze_hash = (int *)calloc(vocab_size, sizeof(int));
 
     HASHREC **vocab_hash = inithashtable();
@@ -507,14 +506,16 @@ int train_glove() {
     fclose(fid);
 
     fid = fopen(freeze_vocab, "rb");
-    long long idx;
-    while (fscanf(fid, format, str) != EOF) { // Check all freezen tokens into hashtable
-        idx = hashinsert(vocab_hash, str, -1, 0);
-        fscanf(fid, "%lld", &tmp);
-        if (idx >= 0) freeze_hash[idx] = 1;
-    }
-    fclose(fid);
 
+    if (fid != NULL) {
+        long long idx;
+        while (fscanf(fid, format, str) != EOF) { // Check all freezen tokens into hashtable
+            idx = hashinsert(vocab_hash, str, -1, 0);
+            fscanf(fid, "%lld", &tmp);
+            if (idx >= 0) freeze_hash[idx] = 1;
+        }
+        fclose(fid);
+    }
 
     fprintf(stderr, "TRAINING MODEL\n");
 
