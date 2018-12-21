@@ -367,12 +367,15 @@ int save_params(int nb_iter) {
     if (use_binary != 1) { // Save parameters in text file
         if (nb_iter <= 0) {
             sprintf(output_file,"%s.txt",save_W_file);
-            sprintf(output_file,"%s.txt",save_W_file);
 
-            sprintf(output_word_vector_file_full,"%s.w.txt", output_file);
-            sprintf(output_context_vector_file_full,"%s.c.txt", output_file);
-        } else
+            sprintf(output_word_vector_file_full,"%s.w.txt", save_W_file);
+            sprintf(output_context_vector_file_full,"%s.c.txt", save_W_file);
+        } else {
             sprintf(output_file,"%s.%03d.txt",save_W_file,nb_iter);
+
+            sprintf(output_word_vector_file_full,"%s.%03d.w.txt", save_W_file, nb_iter);
+            sprintf(output_context_vector_file_full,"%s.%03d.c.txt", save_W_file, nb_iter);
+        }
         if (save_gradsq > 0) {
             if (nb_iter <= 0)
                 sprintf(output_file_gsq,"%s.txt",save_gradsq_file);
@@ -386,9 +389,9 @@ int save_params(int nb_iter) {
         if (fout == NULL) {fprintf(stderr, "Unable to open file %s.\n",output_file); return 1;}
 
         foutw = fopen(output_word_vector_file_full,"wb");
-        if (fout == NULL) {fprintf(stderr, "Unable to open file %s.\n",output_word_vector_file_full); return 1;}
+        if (foutw == NULL) {fprintf(stderr, "Unable to open file %s.\n",output_word_vector_file_full); return 1;}
         foutc = fopen(output_context_vector_file_full,"wb");
-        if (fout == NULL) {fprintf(stderr, "Unable to open file %s.\n",output_context_vector_file_full); return 1;}
+        if (foutc == NULL) {fprintf(stderr, "Unable to open file %s.\n",output_context_vector_file_full); return 1;}
 
 
         fid = fopen(vocab_file, "r");
@@ -696,7 +699,6 @@ int main(int argc, char **argv) {
         if (fid == NULL) {fprintf(stderr, "Unable to open vocab file %s.\n",vocab_file); return 1;}
         while ((i = getc(fid)) != EOF) if (i == '\n') vocab_size++; // Count number of entries in vocab_file
         fclose(fid);
-
         result = train_glove();
         free(cost);
     }
