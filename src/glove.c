@@ -184,6 +184,13 @@ void initialize_parameters() {
 
     long long w_size, w_length;
     fid = fopen(init_word_file, "r");
+    if (fid == NULL) {
+        if (init_word_file[0] != 0) {
+            printf("Init word error\n");
+            exit(1);
+        }
+    }
+
     if (fid != NULL) {
         fscanf (fid, "%lld", &w_size);
         fscanf (fid, "%lld", &w_length);
@@ -209,6 +216,13 @@ void initialize_parameters() {
 
     long long c_size, c_length;
     fid = fopen(init_context_file, "r");
+    if (fid == NULL) {
+        if (init_context_file[0] != 0) {
+            printf("Init context error\n");
+            exit(1);
+        }
+    }
+
     if (fid != NULL) {
         fscanf (fid, "%lld", &c_size);
         fscanf (fid, "%lld", &c_length);
@@ -220,6 +234,7 @@ void initialize_parameters() {
         char word[MAX_STRING_LENGTH];
         long long idx;
         real value;
+
         sprintf(format,"%%%ds",MAX_STRING_LENGTH);
         for (a = 0; a < w_size; a++) {
             if (fscanf(fid,format,word) == 0) return;
@@ -510,6 +525,13 @@ int train_glove() {
 
     fid = fopen(freeze_vocab, "rb");
 
+    if (fid == NULL) {
+        if (freeze_vocab[0] != 0) {
+            printf("Freeze vocab error\n");
+            exit(1);
+        }
+    }
+
     if (fid != NULL) {
         long long idx;
         while (fscanf(fid, format, str) != EOF) { // Check all freezen tokens into hashtable
@@ -657,6 +679,9 @@ int main(int argc, char **argv) {
         printf("\t-freeze-iter <file>\n");
         printf("\t\tNumber of iteration to freeze vocab.\n");
 
+        printf("\t-use-unk-vec <int>\n");
+        printf("\t\tGenerate word embedding for unknown word; default 1\n");        
+
         printf("\nExample usage:\n");
         printf("./glove -input-file cooccurrence.shuf.bin -vocab-file vocab.txt -save-file vectors -gradsq-file gradsq -verbose 2 -vector-size 100 -threads 16 -alpha 0.75 -x-max 100.0 -eta 0.05 -binary 2 -model 2\n\n");
         result = 0;
@@ -693,6 +718,10 @@ int main(int argc, char **argv) {
 
         if ((i = find_arg((char *)"-freeze-vocab", argc, argv)) > 0) strcpy(freeze_vocab, argv[i + 1]);
         if ((i = find_arg((char *)"-freeze-iter", argc, argv)) > 0) freeze_iter = atoi(argv[i + 1]);
+
+        if ((i = find_arg((char *)"-use-unk-vec", argc, argv)) > 0) use_unk_vec = atoi(argv[i + 1]);
+        if (use_unk_vec != 0 && use_unk_vec != 1)
+            use_unk_vec = 0;
 
         vocab_size = 0;
         fid = fopen(vocab_file, "r");
