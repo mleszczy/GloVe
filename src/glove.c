@@ -123,13 +123,14 @@ void *glove_thread(void *vid) {
 
         /* Get location of words in W & gradsq */
         l1 = (cr.word1 - 1LL) * (vector_size + 1); // cr word indices start at 1
-        l2 = ((cr.word2 - 1LL) + vocab_size) * (vector_size + 1); // shift by vocab_size to get separate vectors for context words
+        l2 = (cr.word2 - 1LL) * (vector_size + 1); // shift by vocab_size to get separate vectors for context words
 
         /* Calculate cost, save diff for gradients */
         diff = 0;
         for (b = 0; b < vector_size; b++) diff += W[b + l1] * W[b + l2]; // dot product of word and context word vector
-        diff += W[vector_size + l1] + W[vector_size + l2] - log(cr.val); // add separate bias for each word
-        fdiff = (cr.val > x_max) ? diff : pow(cr.val / x_max, alpha) * diff; // multiply weighting function (f) with diff
+        diff -= cr.val; // subtract coocur
+        // fdiff = (cr.val > x_max) ? diff : pow(cr.val / x_max, alpha) * diff; // multiply weighting function (f) with diff
+        fdiff = diff;
 
         // Check for NaN and inf() in the diffs.
         if (isnan(diff) || isnan(fdiff) || isinf(diff) || isinf(fdiff)) {
@@ -148,12 +149,12 @@ void *glove_thread(void *vid) {
             temp1 = fdiff * W[b + l2];
             temp2 = fdiff * W[b + l1];
             // adaptive updates
-            W_updates1[b] = temp1 / sqrt(gradsq[b + l1]);
-            W_updates2[b] = temp2 / sqrt(gradsq[b + l2]);
+            W_updates1[b] = temp1;// / sqrt(gradsq[b + l1]);
+            W_updates2[b] = temp2;// / sqrt(gradsq[b + l2]);
             W_updates1_sum += W_updates1[b];
             W_updates2_sum += W_updates2[b];
-            gradsq[b + l1] += temp1 * temp1;
-            gradsq[b + l2] += temp2 * temp2;
+            //gradsq[b + l1] += temp1 * temp1;
+            //gradsq[b + l2] += temp2 * temp2;
         }
         if (!isnan(W_updates1_sum) && !isinf(W_updates1_sum) && !isnan(W_updates2_sum) && !isinf(W_updates2_sum)) {
             for (b = 0; b < vector_size; b++) {
@@ -163,11 +164,11 @@ void *glove_thread(void *vid) {
         }
 
         // updates for bias terms
-        W[vector_size + l1] -= check_nan(fdiff / sqrt(gradsq[vector_size + l1]));
-        W[vector_size + l2] -= check_nan(fdiff / sqrt(gradsq[vector_size + l2]));
+//        W[vector_size + l1] -= check_nan(fdiff / sqrt(gradsq[vector_size + l1]));
+//        W[vector_size + l2] -= check_nan(fdiff / sqrt(gradsq[vector_size + l2]));
         fdiff *= fdiff;
-        gradsq[vector_size + l1] += fdiff;
-        gradsq[vector_size + l2] += fdiff;
+//        gradsq[vector_size + l1] += fdiff;
+//        gradsq[vector_size + l2] += fdiff;
 
     }
     free(W_updates1);
