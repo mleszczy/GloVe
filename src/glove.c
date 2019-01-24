@@ -43,7 +43,7 @@ typedef struct cooccur_rec {
 
 int write_header=0; //0=no, 1=yes; writes vocab_size/vector_size as first line for use with some libraries, such as gensim.
 int verbose = 2; // 0, 1, or 2
-int use_unk_vec = 1; // 0 or 1
+int use_unk_vec = 0; // 0 or 1
 int num_threads = 8; // pthreads
 int num_iter = 25; // Number of full passes through cooccurrence matrix
 int vector_size = 50; // Word vector size
@@ -138,12 +138,12 @@ void *glove_thread(void *vid) {
             continue;
         }
 
-        cost[id] += 0.5 * fdiff * diff; // weighted squared error
+        cost[id] += fdiff * diff; // weighted squared error
 
         /* Adaptive gradient updates */
         fdiff *= eta; // for ease in calculating gradient
-        real W_updates1_sum = 0;
-        real W_updates2_sum = 0;
+//        real W_updates1_sum = 0;
+//        real W_updates2_sum = 0;
         for (b = 0; b < vector_size; b++) {
             // learning rate times gradient for word vectors
             temp1 = fdiff * W[b + l2];
@@ -151,16 +151,16 @@ void *glove_thread(void *vid) {
             // adaptive updates
             W_updates1[b] = temp1;// / sqrt(gradsq[b + l1]);
             W_updates2[b] = temp2;// / sqrt(gradsq[b + l2]);
-            W_updates1_sum += W_updates1[b];
-            W_updates2_sum += W_updates2[b];
+//            W_updates1_sum += W_updates1[b];
+//            W_updates2_sum += W_updates2[b];
             //gradsq[b + l1] += temp1 * temp1;
             //gradsq[b + l2] += temp2 * temp2;
         }
-        if (!isnan(W_updates1_sum) && !isinf(W_updates1_sum) && !isnan(W_updates2_sum) && !isinf(W_updates2_sum)) {
+//        if (!isnan(W_updates1_sum) && !isinf(W_updates1_sum) && !isnan(W_updates2_sum) && !isinf(W_updates2_sum)) {
             for (b = 0; b < vector_size; b++) {
                 W[b + l1] -= W_updates1[b];
                 W[b + l2] -= W_updates2[b];
-            }
+//            }
         }
 
         // updates for bias terms
