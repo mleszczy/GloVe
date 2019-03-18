@@ -32,6 +32,10 @@
 
 #define _FILE_OFFSET_BITS 64
 #define MAX_STRING_LENGTH 1000
+#define TSIZE 1048576
+#define HSEED 1159241
+
+#define HASHFN  bitwisehash
 
 typedef double real;
 
@@ -40,6 +44,12 @@ typedef struct cooccur_rec {
     int word2;
     real val;
 } CREC;
+
+typedef struct hashrec {
+    char *word;
+    long long count;
+    struct hashrec *next;
+} HASHREC;
 
 int write_header=0; //0=no, 1=yes; writes vocab_size/vector_size as first line for use with some libraries, such as gensim.
 int verbose = 2; // 0, 1, or 2
@@ -58,10 +68,74 @@ long long num_lines, *lines_per_thread, vocab_size;
 char *vocab_file, *input_file, *save_W_file, *save_gradsq_file;
 int seed;
 
+char init_word_file[MAX_STRING_LENGTH], init_context_file[MAX_STRING_LENGTH];
+
+int *freeze_hash;
+
+char freeze_vocab[MAX_STRING_LENGTH];
+long long freeze_iter = 0;
+
+long long global_iter=0;
+
 /* Efficient string comparison */
 int scmp( char *s1, char *s2 ) {
     while (*s1 != '\0' && *s1 == *s2) {s1++; s2++;}
     return(*s1 - *s2);
+}
+
+/* Simple bitwise hash function */
+unsigned int bitwisehash(char *word, int tsize, unsigned int seed) {
+    char c;
+    unsigned int h;
+    h = seed;
+    for (; (c =* word) != '\0'; word++) h ^= ((h << 5) + c + (h >> 2));
+    return((unsigned int)((h&0x7fffffff) % tsize));
+}
+
+/* Create hash table, initialise pointers to NULL */
+HASHREC ** inithashtable() {
+    int i;
+    HASHREC **ht;
+    ht = (HASHREC **) malloc( sizeof(HASHREC *) * TSIZE );
+    for (i = 0; i < TSIZE; i++) ht[i] = (HASHREC *) NULL;
+    return(ht);
+}
+
+/* Search hash table for given string, insert if not found */
+long long hashinsert(HASHREC **ht, char *w, long long cnt, int insert) {
+    HASHREC     *htmp, *hprv;
+    unsigned int hval = HASHFN(w, TSIZE, HSEED);
+    long long ret = -1;
+
+    for (hprv = NULL, htmp = ht[hval]; htmp != NULL && scmp(htmp->word, w) != 0; hprv = htmp, htmp = htmp->next);
+    if (htmp == NULL) {
+        if (insert > 0) {
+            htmp = (HASHREC *) malloc( sizeof(HASHREC) );
+            htmp->word = (char *) malloc( strlen(w) + 1 );
+            strcpy(htmp->word, w);
+            htmp->count = cnt;
+            htmp->next = NULL;
+            if ( hprv==NULL )
+                ht[hval] = htmp;
+            else
+                hprv->next = htmp;
+            ret = htmp->count;
+        }
+    }
+    else {
+        /* new records are not moved to front */
+        if (insert > 0) {
+            htmp->count = cnt;
+            if (hprv != NULL) {
+                /* move to front on access */
+                hprv->next = htmp->next;
+                htmp->next = ht[hval];
+                ht[hval] = htmp;
+            }
+        }
+        ret = htmp->count;
+    }
+    return ret;
 }
 
 void initialize_parameters() {
@@ -91,7 +165,90 @@ void initialize_parameters() {
             gradsq[a * vector_size + b] = 1.0; // So initial value of eta is equal to initial learning rate
         }
     }
+
+    HASHREC **vocab_hash = inithashtable();
+
+    char str[MAX_STRING_LENGTH + 1];
+    char format[20];
+    sprintf(format,"%%%ds",MAX_STRING_LENGTH);
+    FILE *fid;
+    fid = fopen(vocab_file, "rb");
+    long long cnt = 0;
+    long long tmp;
+    while (fscanf(fid, format, str) != EOF) { // Insert all tokens into hashtable
+        hashinsert(vocab_hash, str, cnt, 1);
+        fscanf(fid, "%lld", &tmp);
+        cnt += 1;
+    }
+    fclose(fid);
+
+    long long w_size, w_length;
+    fid = fopen(init_word_file, "r");
+    if (fid == NULL) {
+        if (init_word_file[0] != 0) {
+            printf("Init word error\n");
+            exit(1);
+        }
+    }
+
+    if (fid != NULL) {
+        fscanf (fid, "%lld", &w_size);
+        fscanf (fid, "%lld", &w_length);
+        if (vector_size != w_length) {
+            fprintf(stderr, "Vector length doesn't match.\n");
+            return;
+        }
+
+        char word[MAX_STRING_LENGTH];
+        long long idx;
+        real value;
+        sprintf(format,"%%%ds",MAX_STRING_LENGTH);
+        for (a = 0; a < w_size; a++) {
+            if (fscanf(fid,format,word) == 0) return;
+            idx = hashinsert(vocab_hash, word, -1, 0);
+            for (b = 0; b < w_length; b++) {
+                if (fscanf(fid," %lf",&value) == 0) return;
+                if (idx >= 0) W[idx * vector_size + b] = value;
+            }
+        }
+        fclose(fid);
+    }
+
+    long long c_size, c_length;
+    fid = fopen(init_context_file, "r");
+    if (fid == NULL) {
+        if (init_context_file[0] != 0) {
+            printf("Init context error\n");
+            exit(1);
+        }
+    }
+
+    if (fid != NULL) {
+        fscanf (fid, "%lld", &c_size);
+        fscanf (fid, "%lld", &c_length);
+        if (vector_size != c_length) {
+            fprintf(stderr, "Vector length doesn't match.\n");
+            return;
+        }
+
+        char word[MAX_STRING_LENGTH];
+        long long idx;
+        real value;
+
+        sprintf(format,"%%%ds",MAX_STRING_LENGTH);
+        for (a = 0; a < w_size; a++) {
+            if (fscanf(fid,format,word) == 0) return;
+            idx = hashinsert(vocab_hash, word, -1, 0);
+            for (b = 0; b < c_length; b++) {
+                if (fscanf(fid," %lf",&value) == 0) return;
+                if (idx >= 0) W[vocab_size * vector_size + idx * vector_size + b] = value;
+            }
+        }
+        fclose(fid);
+    }
+
     vector_size--;
+
 }
 
 inline real check_nan(real update) {
@@ -157,14 +314,18 @@ void *glove_thread(void *vid) {
         }
         if (!isnan(W_updates1_sum) && !isinf(W_updates1_sum) && !isnan(W_updates2_sum) && !isinf(W_updates2_sum)) {
             for (b = 0; b < vector_size; b++) {
-                W[b + l1] -= W_updates1[b];
-                W[b + l2] -= W_updates2[b];
+                if (freeze_hash[cr.word1 - 1LL] == 0 || global_iter >= freeze_iter)
+                    W[b + l1] -= W_updates1[b];
+                if (freeze_hash[cr.word2 - 1LL] == 0 || global_iter >= freeze_iter)
+                    W[b + l2] -= W_updates2[b];
             }
         }
 
         // updates for bias terms
-        W[vector_size + l1] -= check_nan(fdiff / sqrt(gradsq[vector_size + l1]));
-        W[vector_size + l2] -= check_nan(fdiff / sqrt(gradsq[vector_size + l2]));
+        if (freeze_hash[cr.word1 - 1LL] == 0 || global_iter >= freeze_iter)
+            W[vector_size + l1] -= check_nan(fdiff / sqrt(gradsq[vector_size + l1]));
+        if (freeze_hash[cr.word2 - 1LL] == 0 || global_iter >= freeze_iter)
+            W[vector_size + l2] -= check_nan(fdiff / sqrt(gradsq[vector_size + l2]));
         fdiff *= fdiff;
         gradsq[vector_size + l1] += fdiff;
         gradsq[vector_size + l2] += fdiff;
@@ -188,8 +349,13 @@ int save_params(int nb_iter) {
     long long a, b;
     char format[20];
     char output_file[MAX_STRING_LENGTH], output_file_gsq[MAX_STRING_LENGTH];
+
+    char output_word_vector_file_full[MAX_STRING_LENGTH];
+    char output_context_vector_file_full[MAX_STRING_LENGTH];
+
     char *word = malloc(sizeof(char) * MAX_STRING_LENGTH + 1);
     FILE *fid, *fout, *fgs;
+    FILE *foutw, *foutc;
 
     if (use_binary > 0) { // Save parameters in binary file
         if (nb_iter <= 0)
@@ -214,10 +380,17 @@ int save_params(int nb_iter) {
         }
     }
     if (use_binary != 1) { // Save parameters in text file
-        if (nb_iter <= 0)
+        if (nb_iter <= 0) {
             sprintf(output_file,"%s.txt",save_W_file);
-        else
+
+            sprintf(output_word_vector_file_full,"%s.w.txt", save_W_file);
+            sprintf(output_context_vector_file_full,"%s.c.txt", save_W_file);
+        } else {
             sprintf(output_file,"%s.%03d.txt",save_W_file,nb_iter);
+
+            sprintf(output_word_vector_file_full,"%s.%03d.w.txt", save_W_file, nb_iter);
+            sprintf(output_context_vector_file_full,"%s.%03d.c.txt", save_W_file, nb_iter);
+        }
         if (save_gradsq > 0) {
             if (nb_iter <= 0)
                 sprintf(output_file_gsq,"%s.txt",save_gradsq_file);
@@ -228,11 +401,22 @@ int save_params(int nb_iter) {
             if (fgs == NULL) {fprintf(stderr, "Unable to open file %s.\n",save_gradsq_file); return 1;}
         }
         fout = fopen(output_file,"wb");
-        if (fout == NULL) {fprintf(stderr, "Unable to open file %s.\n",save_W_file); return 1;}
+        if (fout == NULL) {fprintf(stderr, "Unable to open file %s.\n",output_file); return 1;}
+
+        foutw = fopen(output_word_vector_file_full,"wb");
+        if (foutw == NULL) {fprintf(stderr, "Unable to open file %s.\n",output_word_vector_file_full); return 1;}
+        foutc = fopen(output_context_vector_file_full,"wb");
+        if (foutc == NULL) {fprintf(stderr, "Unable to open file %s.\n",output_context_vector_file_full); return 1;}
+
+
         fid = fopen(vocab_file, "r");
         sprintf(format,"%%%ds",MAX_STRING_LENGTH);
         if (fid == NULL) {fprintf(stderr, "Unable to open file %s.\n",vocab_file); return 1;}
         if (write_header) fprintf(fout, "%lld %d\n", vocab_size, vector_size);
+
+        fprintf(foutw, "%lld %d\n", vocab_size, vector_size+1);
+        fprintf(foutc, "%lld %d\n", vocab_size, vector_size+1);
+
         for (a = 0; a < vocab_size; a++) {
             if (fscanf(fid,format,word) == 0) return 1;
             // input vocab cannot contain special <unk> keyword
@@ -247,6 +431,15 @@ int save_params(int nb_iter) {
             if (model == 2) // Save "word + context word" vectors (without bias)
                 for (b = 0; b < vector_size; b++) fprintf(fout," %lf", W[a * (vector_size + 1) + b] + W[(vocab_size + a) * (vector_size + 1) + b]);
             fprintf(fout,"\n");
+
+            // Save word embedding and context embedding (including bias)
+            fprintf(foutw, "%s",word);
+            fprintf(foutc, "%s",word);
+            for (b = 0; b < (vector_size + 1); b++) fprintf(foutw," %lf", W[a * (vector_size + 1) + b]);
+            for (b = 0; b < (vector_size + 1); b++) fprintf(foutc," %lf", W[(vocab_size + a) * (vector_size + 1) + b]);
+            fprintf(foutw,"\n");
+            fprintf(foutc,"\n");
+
             if (save_gradsq > 0) { // Save gradsq
                 fprintf(fgs, "%s",word);
                 for (b = 0; b < (vector_size + 1); b++) fprintf(fgs," %lf", gradsq[a * (vector_size + 1) + b]);
@@ -271,6 +464,10 @@ int save_params(int nb_iter) {
             }
 
             fprintf(fout, "%s",word);
+
+            fprintf(foutw, "%s",word);
+            fprintf(foutc, "%s",word);
+
             if (model == 0) { // Save all parameters (including bias)
                 for (b = 0; b < (vector_size + 1); b++) fprintf(fout," %lf", unk_vec[b]);
                 for (b = 0; b < (vector_size + 1); b++) fprintf(fout," %lf", unk_context[b]);
@@ -281,12 +478,20 @@ int save_params(int nb_iter) {
                 for (b = 0; b < vector_size; b++) fprintf(fout," %lf", unk_vec[b] + unk_context[b]);
             fprintf(fout,"\n");
 
+            for (b = 0; b < (vector_size + 1); b++) fprintf(foutw," %lf", unk_vec[b]);
+            for (b = 0; b < (vector_size + 1); b++) fprintf(foutc," %lf", unk_context[b]);
+            fprintf(foutw,"\n");
+            fprintf(foutc,"\n");
+
             free(unk_vec);
             free(unk_context);
         }
 
         fclose(fid);
         fclose(fout);
+
+        fclose(foutw);
+        fclose(foutc);
         if (save_gradsq > 0) fclose(fgs);
     }
     return 0;
@@ -299,6 +504,43 @@ int train_glove() {
     int b;
     FILE *fin;
     real total_cost = 0;
+
+    freeze_hash = (int *)calloc(vocab_size, sizeof(int));
+
+    HASHREC **vocab_hash = inithashtable();
+
+    char str[MAX_STRING_LENGTH + 1];
+    char format[20];
+    sprintf(format,"%%%ds",MAX_STRING_LENGTH);
+    FILE *fid;
+    fid = fopen(vocab_file, "rb");
+    long long cnt = 0;
+    long long tmp;
+    while (fscanf(fid, format, str) != EOF) { // Insert all tokens into hashtable
+        hashinsert(vocab_hash, str, cnt, 1);
+        fscanf(fid, "%lld", &tmp);
+        cnt += 1;
+    }
+    fclose(fid);
+
+    fid = fopen(freeze_vocab, "rb");
+
+    if (fid == NULL) {
+        if (freeze_vocab[0] != 0) {
+            printf("Freeze vocab error\n");
+            exit(1);
+        }
+    }
+
+    if (fid != NULL) {
+        long long idx;
+        while (fscanf(fid, format, str) != EOF) { // Check all freezen tokens into hashtable
+            idx = hashinsert(vocab_hash, str, -1, 0);
+            fscanf(fid, "%lld", &tmp);
+            if (idx >= 0) freeze_hash[idx] = 1;
+        }
+        fclose(fid);
+    }
 
     fprintf(stderr, "TRAINING MODEL\n");
 
@@ -323,8 +565,12 @@ int train_glove() {
     struct tm *info;
     char time_buffer[80];
     // Lock-free asynchronous SGD
+    struct timespec start, finish;
+    double elapsed;
+    clock_gettime(CLOCK_MONOTONIC, &start);
     for (b = 0; b < num_iter; b++) {
         total_cost = 0;
+        global_iter = b;
         for (a = 0; a < num_threads - 1; a++) lines_per_thread[a] = num_lines / num_threads;
         lines_per_thread[a] = num_lines / num_threads + num_lines % num_threads;
         long long *thread_ids = (long long*)malloc(sizeof(long long) * num_threads);
@@ -348,6 +594,11 @@ int train_glove() {
         }
 
     }
+    clock_gettime(CLOCK_MONOTONIC, &finish);
+    elapsed = (finish.tv_sec - start.tv_sec);
+    elapsed += (finish.tv_nsec - start.tv_nsec) / 1000000000.0;
+    printf("Average epoch time: %lfs\n", elapsed / num_iter);
+
     free(pt);
     free(lines_per_thread);
     return save_params(0);
@@ -417,6 +668,20 @@ int main(int argc, char **argv) {
         printf("\t\tCheckpoint a  model every <int> iterations; default 0 (off)\n");
         printf("\t-seed <int>\n");
         printf("\t\tSeed for embedding initialization\n");
+
+        printf("\t-init-word <file>\n");
+        printf("\t\tInit word vectors from <file>, not random initialization.\n");
+        printf("\t-init-context <file>\n");
+        printf("\t\tInit context vectors from <file>, not random initialization.\n");
+
+        printf("\t-freeze-vocab <file>\n");
+        printf("\t\tFreezen vocab from <file>.\n");
+        printf("\t-freeze-iter <file>\n");
+        printf("\t\tNumber of iteration to freeze vocab.\n");
+
+        printf("\t-use-unk-vec <int>\n");
+        printf("\t\tGenerate word embedding for unknown word; default 1\n");        
+
         printf("\nExample usage:\n");
         printf("./glove -input-file cooccurrence.shuf.bin -vocab-file vocab.txt -save-file vectors -gradsq-file gradsq -verbose 2 -vector-size 100 -threads 16 -alpha 0.75 -x-max 100.0 -eta 0.05 -binary 2 -model 2\n\n");
         result = 0;
@@ -448,12 +713,21 @@ int main(int argc, char **argv) {
         if ((i = find_arg((char *)"-checkpoint-every", argc, argv)) > 0) checkpoint_every = atoi(argv[i + 1]);
         if ((i = find_arg((char *)"-seed", argc, argv)) > 0) seed = atoi(argv[i + 1]);
 
+        if ((i = find_arg((char *)"-init-word", argc, argv)) > 0) strcpy(init_word_file, argv[i + 1]);
+        if ((i = find_arg((char *)"-init-context", argc, argv)) > 0) strcpy(init_context_file, argv[i + 1]);
+
+        if ((i = find_arg((char *)"-freeze-vocab", argc, argv)) > 0) strcpy(freeze_vocab, argv[i + 1]);
+        if ((i = find_arg((char *)"-freeze-iter", argc, argv)) > 0) freeze_iter = atoi(argv[i + 1]);
+
+        if ((i = find_arg((char *)"-use-unk-vec", argc, argv)) > 0) use_unk_vec = atoi(argv[i + 1]);
+        if (use_unk_vec != 0 && use_unk_vec != 1)
+            use_unk_vec = 0;
+
         vocab_size = 0;
         fid = fopen(vocab_file, "r");
         if (fid == NULL) {fprintf(stderr, "Unable to open vocab file %s.\n",vocab_file); return 1;}
         while ((i = getc(fid)) != EOF) if (i == '\n') vocab_size++; // Count number of entries in vocab_file
         fclose(fid);
-
         result = train_glove();
         free(cost);
     }
